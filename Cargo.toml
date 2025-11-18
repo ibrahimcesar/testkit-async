@@ -1,13 +1,13 @@
 [package]
 name = "testkit-async"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
 rust-version = "1.70"
-authors = ["Your Name <your.email@example.com>"]
-license = "MIT OR Apache-2.0"
+authors = ["Ibrahim Cesar <email@ibrahimcesar.com>"]
+license = "MIT"
 description = "Practical testing tools for async Rust - time control, deterministic execution, and failure injection"
-homepage = "https://github.com/yourusername/testkit-async"
-repository = "https://github.com/yourusername/testkit-async"
+homepage = "https://github.com/ibrahimcesar/testkit-async"
+repository = "https://github.com/ibrahimcesar/testkit-async"
 documentation = "https://docs.rs/testkit-async"
 keywords = ["async", "testing", "mock", "test", "tokio"]
 categories = ["asynchronous", "development-tools::testing"]
@@ -29,7 +29,11 @@ thiserror = "1.0"
 parking_lot = "0.12"
 
 # Optional: Tokio integration
-tokio = { version = "1.35", features = ["time", "rt", "macros"], optional = true }
+tokio = { version = "1.35", features = [
+    "time",
+    "rt",
+    "macros",
+], optional = true }
 
 # Optional: async-std integration
 async-std = { version = "1.12", optional = true }
@@ -55,10 +59,7 @@ async-std = ["dep:async-std"]
 full = ["macros", "tokio", "async-std"]
 
 [workspace]
-members = [
-    ".",
-    "testkit-async-macros",
-]
+members = [".", "testkit-async-macros"]
 
 [profile.dev]
 opt-level = 0
