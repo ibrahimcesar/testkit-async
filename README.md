@@ -2,7 +2,7 @@
 
 # testkit-async 🧰
 
-> Practical testing tools for async Rust
+_Practical testing tools for async Rust_
 
 **testkit-async** is a comprehensive testing toolkit for async Rust code. It provides time control, deterministic execution, failure injection, and rich assertions to make async testing fast, reliable, and easy.
 
