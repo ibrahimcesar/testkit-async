@@ -39,27 +39,27 @@ tokio = { version = "1.35", features = [
 async-std = { version = "1.12", optional = true }
 
 # Optional: Macros
-testkit-async-macros = { version = "0.1", path = "testkit-async-macros", optional = true }
+# testkit-async-macros = { version = "0.1", path = "testkit-async-macros", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1.35", features = ["full"] }
 async-std = { version = "1.12", features = ["attributes"] }
 
 [features]
-default = ["macros", "tokio"]
+default = ["tokio"]
 
-# Attribute macros
-macros = ["testkit-async-macros"]
+# # Attribute macros
+# macros = ["testkit-async-macros"]
 
 # Runtime support
 tokio = ["dep:tokio"]
 async-std = ["dep:async-std"]
 
 # All features
-full = ["macros", "tokio", "async-std"]
+full = ["tokio", "async-std"]
 
-[workspace]
-members = [".", "testkit-async-macros"]
+# [workspace]
+# members = [".", "testkit-async-macros"]
 
 [profile.dev]
 opt-level = 0
