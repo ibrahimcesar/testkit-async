@@ -1,0 +1,79 @@
+[package]
+name = "testkit-async"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+authors = ["Your Name <your.email@example.com>"]
+license = "MIT OR Apache-2.0"
+description = "Practical testing tools for async Rust - time control, deterministic execution, and failure injection"
+homepage = "https://github.com/yourusername/testkit-async"
+repository = "https://github.com/yourusername/testkit-async"
+documentation = "https://docs.rs/testkit-async"
+keywords = ["async", "testing", "mock", "test", "tokio"]
+categories = ["asynchronous", "development-tools::testing"]
+readme = "README.md"
+
+[lib]
+name = "testkit_async"
+path = "src/lib.rs"
+
+[dependencies]
+# Core async
+futures = "0.3"
+pin-project = "1.1"
+
+# Error handling
+thiserror = "1.0"
+
+# Time
+parking_lot = "0.12"
+
+# Optional: Tokio integration
+tokio = { version = "1.35", features = ["time", "rt", "macros"], optional = true }
+
+# Optional: async-std integration
+async-std = { version = "1.12", optional = true }
+
+# Optional: Macros
+testkit-async-macros = { version = "0.1", path = "testkit-async-macros", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1.35", features = ["full"] }
+async-std = { version = "1.12", features = ["attributes"] }
+
+[features]
+default = ["macros", "tokio"]
+
+# Attribute macros
+macros = ["testkit-async-macros"]
+
+# Runtime support
+tokio = ["dep:tokio"]
+async-std = ["dep:async-std"]
+
+# All features
+full = ["macros", "tokio", "async-std"]
+
+[workspace]
+members = [
+    ".",
+    "testkit-async-macros",
+]
+
+[profile.dev]
+opt-level = 0
+
+[profile.test]
+opt-level = 1
+
+[[example]]
+name = "time_control"
+path = "examples/time_control.rs"
+
+[[example]]
+name = "failure_injection"
+path = "examples/failure_injection.rs"
+
+[[example]]
+name = "sync_points"
+path = "examples/sync_points.rs"
