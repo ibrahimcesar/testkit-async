@@ -16,8 +16,10 @@
 //! assert_eq!(clock.now(), Duration::from_secs(10));
 //! ```
 
+mod instant;
 mod mock_clock;
 mod sleep;
 
+pub use instant::MockInstant;
 pub use mock_clock::MockClock;
 pub use sleep::{MockDelay, MockSleep};
