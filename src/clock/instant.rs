@@ -49,9 +49,7 @@ impl MockInstant {
     /// ```
     #[must_use]
     pub fn now(clock: &MockClock) -> Self {
-        Self {
-            inner: clock.now(),
-        }
+        Self { inner: clock.now() }
     }
 
     /// Returns the amount of time elapsed from another instant to this one.
@@ -123,7 +121,8 @@ impl MockInstant {
     /// ```
     #[must_use]
     pub fn saturating_duration_since(&self, earlier: MockInstant) -> Duration {
-        self.checked_duration_since(earlier).unwrap_or(Duration::ZERO)
+        self.checked_duration_since(earlier)
+            .unwrap_or(Duration::ZERO)
     }
 
     /// Returns the amount of time elapsed since this instant was created.
@@ -165,7 +164,9 @@ impl MockInstant {
     /// ```
     #[must_use]
     pub fn checked_add(&self, duration: Duration) -> Option<MockInstant> {
-        self.inner.checked_add(duration).map(|d| MockInstant { inner: d })
+        self.inner
+            .checked_add(duration)
+            .map(|d| MockInstant { inner: d })
     }
 
     /// Returns `Some(t)` where `t` is the time `self - duration` if `t` can be
@@ -189,7 +190,9 @@ impl MockInstant {
     /// ```
     #[must_use]
     pub fn checked_sub(&self, duration: Duration) -> Option<MockInstant> {
-        self.inner.checked_sub(duration).map(|d| MockInstant { inner: d })
+        self.inner
+            .checked_sub(duration)
+            .map(|d| MockInstant { inner: d })
     }
 
     /// Returns the inner duration (time since epoch).
@@ -282,7 +285,7 @@ mod tests {
         clock.advance(Duration::from_secs(5));
         let later = MockInstant::now(&clock);
 
-        earlier.duration_since(later);
+        let _ = earlier.duration_since(later);
     }
 
     #[test]
@@ -333,7 +336,10 @@ mod tests {
         let instant = MockInstant::now(&clock);
 
         let later = instant.checked_add(Duration::from_secs(5));
-        assert_eq!(later, Some(MockInstant::from_duration(Duration::from_secs(5))));
+        assert_eq!(
+            later,
+            Some(MockInstant::from_duration(Duration::from_secs(5)))
+        );
     }
 
     #[test]
@@ -342,7 +348,10 @@ mod tests {
         let instant = MockInstant::now(&clock);
 
         let earlier = instant.checked_sub(Duration::from_secs(5));
-        assert_eq!(earlier, Some(MockInstant::from_duration(Duration::from_secs(5))));
+        assert_eq!(
+            earlier,
+            Some(MockInstant::from_duration(Duration::from_secs(5)))
+        );
 
         let too_early = instant.checked_sub(Duration::from_secs(20));
         assert_eq!(too_early, None);

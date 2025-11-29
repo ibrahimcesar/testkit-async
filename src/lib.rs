@@ -57,6 +57,10 @@ pub mod prelude {
 // Re-exports
 pub use error::{Error, Result};
 
+// Re-export the test macro when macros feature is enabled
+#[cfg(feature = "macros")]
+pub use testkit_async_macros::test;
+
 #[cfg(test)]
 mod tests {
     #[test]

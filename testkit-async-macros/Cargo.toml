@@ -2,14 +2,16 @@
 name = "testkit-async-macros"
 version = "0.1.0"
 edition = "2021"
-license = "MIT OR Apache-2.0"
+rust-version = "1.70"
+license = "MIT"
 description = "Proc macros for testkit-async"
-repository = "https://github.com/yourusername/testkit-async"
+repository = "https://github.com/ibrahimcesar/testkit-async"
+authors = ["Ibrahim Cesar <email@ibrahimcesar.com>"]
 
 [lib]
 proc-macro = true
 
 [dependencies]
-syn = { version = "2.0", features = ["full"] }
+syn = { version = "2.0", features = ["full", "parsing", "extra-traits"] }
 quote = "1.0"
 proc-macro2 = "1.0"
