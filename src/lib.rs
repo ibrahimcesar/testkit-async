@@ -37,12 +37,12 @@
 /// Mock clock for time control in tests
 pub mod clock;
 
-pub mod executor;
-pub mod chaos;
 pub mod assertions;
-pub mod sync;
-pub mod mock;
+pub mod chaos;
 pub mod error;
+pub mod executor;
+pub mod mock;
+pub mod sync;
 
 /// Prelude for convenient imports
 ///
