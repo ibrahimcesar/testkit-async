@@ -1,6 +1,6 @@
 //! Virtual time control for async tests
 //!
-//! The `clock` module provides [`MockClock`], a virtual clock that allows you to
+//! The `clock` module provides [`MockClock`](crate::clock::MockClock), a virtual clock that allows you to
 //! control time in your async tests without waiting for real time to pass.
 //!
 //! # Example
