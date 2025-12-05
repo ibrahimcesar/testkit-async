@@ -7,7 +7,8 @@ use std::task::{Context, Poll, Wake, Waker};
 
 use parking_lot::Mutex;
 
-use crate::executor::task::{Task, TaskHandle, TaskId, TaskInfo, TaskState};
+use crate::executor::sync_point::{SyncPointFuture, SyncPointState};
+use crate::executor::task::{SchedulingPolicy, Task, TaskHandle, TaskId, TaskInfo, TaskState};
 
 /// A test executor that provides deterministic task execution.
 ///
@@ -49,6 +50,12 @@ struct ExecutorInner {
     waiting: Mutex<Vec<Task>>,
     /// Information about all tasks (for inspection).
     task_info: Mutex<Vec<TaskInfo>>,
+    /// Sync point coordination.
+    sync_points: Arc<SyncPointState>,
+    /// Scheduling policy for task ordering.
+    policy: SchedulingPolicy,
+    /// Random state for seeded scheduling.
+    random_state: Mutex<u64>,
 }
 
 impl TestExecutor {
@@ -64,13 +71,47 @@ impl TestExecutor {
     /// ```
     #[must_use]
     pub fn new() -> Self {
+        Self::with_policy(SchedulingPolicy::Fifo)
+    }
+
+    /// Creates a new executor with the specified scheduling policy.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use testkit_async::executor::{TestExecutor, SchedulingPolicy};
+    ///
+    /// // Reproducible random ordering
+    /// let executor = TestExecutor::with_policy(SchedulingPolicy::SeededRandom(42));
+    /// ```
+    #[must_use]
+    pub fn with_policy(policy: SchedulingPolicy) -> Self {
+        let seed = match &policy {
+            SchedulingPolicy::SeededRandom(s) => *s,
+            _ => 0,
+        };
         Self {
             inner: Arc::new(ExecutorInner {
                 ready_queue: Mutex::new(VecDeque::new()),
                 waiting: Mutex::new(Vec::new()),
                 task_info: Mutex::new(Vec::new()),
+                sync_points: Arc::new(SyncPointState::new()),
+                policy,
+                random_state: Mutex::new(seed),
             }),
         }
+    }
+
+    /// Returns the scheduling policy being used.
+    #[must_use]
+    pub fn policy(&self) -> &SchedulingPolicy {
+        &self.inner.policy
+    }
+
+    /// Returns the current random seed (for `SeededRandom` policy).
+    #[must_use]
+    pub fn seed(&self) -> u64 {
+        *self.inner.random_state.lock()
     }
 
     /// Spawns a future on this executor.
@@ -203,7 +244,7 @@ impl TestExecutor {
     /// ```
     #[must_use]
     pub fn step(&self) -> bool {
-        let task = self.inner.ready_queue.lock().pop_front();
+        let task = self.next_task();
 
         if let Some(mut task) = task {
             let (waker, woken_flag) = self.create_waker(task.id);
@@ -300,6 +341,203 @@ impl TestExecutor {
         count
     }
 
+    // ========================================================================
+    // Sync Points (Issue #8)
+    // ========================================================================
+
+    /// Creates a future that waits at the named sync point.
+    ///
+    /// Tasks will pause at sync points until explicitly released using
+    /// [`release`] or [`release_one`].
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use testkit_async::executor::TestExecutor;
+    ///
+    /// let executor = TestExecutor::new();
+    ///
+    /// let sync = executor.sync_point("checkpoint");
+    /// executor.spawn(async move {
+    ///     sync.await;
+    ///     42
+    /// });
+    ///
+    /// executor.run_until_stalled();
+    /// assert_eq!(executor.waiting_at("checkpoint"), 1);
+    ///
+    /// executor.release("checkpoint");
+    /// executor.run_until_stalled();
+    /// ```
+    ///
+    /// [`release`]: TestExecutor::release
+    /// [`release_one`]: TestExecutor::release_one
+    #[must_use]
+    pub fn sync_point(&self, name: &str) -> SyncPointFuture {
+        SyncPointFuture::new(name.to_string(), Arc::clone(&self.inner.sync_points))
+    }
+
+    /// Releases all tasks waiting at the named sync point.
+    ///
+    /// Returns the number of tasks released.
+    #[must_use]
+    pub fn release(&self, name: &str) -> usize {
+        self.inner.sync_points.release(name)
+    }
+
+    /// Releases one task waiting at the named sync point.
+    ///
+    /// Returns `true` if a task was released.
+    #[must_use]
+    pub fn release_one(&self, name: &str) -> bool {
+        self.inner.sync_points.release_one(name)
+    }
+
+    /// Returns the number of tasks waiting at the named sync point.
+    #[must_use]
+    pub fn waiting_at(&self, name: &str) -> usize {
+        self.inner.sync_points.waiting_at(name)
+    }
+
+    // ========================================================================
+    // Step-by-Step Execution (Issue #9)
+    // ========================================================================
+
+    /// Polls a specific task once.
+    ///
+    /// Returns `true` if the task was found and polled, `false` if not found.
+    #[must_use]
+    pub fn step_task(&self, id: TaskId) -> bool {
+        // Try to find the task in the ready queue
+        let task = {
+            let mut ready = self.inner.ready_queue.lock();
+            ready
+                .iter()
+                .position(|t| t.id == id)
+                .and_then(|pos| ready.remove(pos))
+        };
+
+        if let Some(mut task) = task {
+            let (waker, woken_flag) = self.create_waker(task.id);
+            let mut cx = Context::from_waker(&waker);
+
+            match task.poll(&mut cx) {
+                Poll::Ready(()) => {
+                    self.update_task_info(task.id, |info| {
+                        info.state = TaskState::Completed;
+                        info.poll_count = task.info.poll_count;
+                    });
+                }
+                Poll::Pending => {
+                    let was_woken = *woken_flag.lock();
+                    self.update_task_info(task.id, |info| {
+                        info.state = TaskState::Pending;
+                        info.poll_count = task.info.poll_count;
+                    });
+
+                    if was_woken {
+                        self.inner.ready_queue.lock().push_back(task);
+                    } else {
+                        self.inner.waiting.lock().push(task);
+                    }
+                }
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Runs for a limited number of steps.
+    ///
+    /// Returns the actual number of steps taken (may be less if all tasks complete).
+    #[must_use]
+    pub fn run_steps(&self, max_steps: usize) -> usize {
+        let mut count = 0;
+        while count < max_steps && self.step() {
+            count += 1;
+        }
+        count
+    }
+
+    /// Runs until all tasks are complete.
+    ///
+    /// Returns the number of polls executed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the executor doesn't make progress (potential deadlock).
+    #[must_use]
+    pub fn run_until_complete(&self) -> usize {
+        let mut count = 0;
+        let max_iterations = 100_000;
+
+        while self.active_count() > 0 {
+            let stepped = self.step();
+            if stepped {
+                count += 1;
+            } else if self.waiting_count() > 0 {
+                // All tasks are blocked - this is a deadlock
+                panic!(
+                    "Deadlock detected: {} tasks waiting, none ready",
+                    self.waiting_count()
+                );
+            }
+
+            assert!(
+                count <= max_iterations,
+                "Executor ran for {max_iterations} iterations without completing"
+            );
+        }
+        count
+    }
+
+    // ========================================================================
+    // Task Inspection (Issue #10)
+    // ========================================================================
+
+    /// Spawns a named future on this executor.
+    ///
+    /// Named tasks are easier to debug and inspect.
+    pub fn spawn_named<F, T>(&self, name: &str, future: F) -> TaskHandle<T>
+    where
+        F: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let result_slot = Arc::new(Mutex::new(None));
+        let mut task = Task::new(future, Arc::clone(&result_slot));
+        task.info = task.info.with_name(name);
+        let id = task.id;
+        let info = task.info.clone();
+
+        self.inner.task_info.lock().push(info);
+        self.inner.ready_queue.lock().push_back(task);
+
+        TaskHandle::new(id, result_slot)
+    }
+
+    /// Returns the number of completed tasks.
+    #[must_use]
+    pub fn completed_count(&self) -> usize {
+        self.inner
+            .task_info
+            .lock()
+            .iter()
+            .filter(|t| t.state == TaskState::Completed)
+            .count()
+    }
+
+    /// Finds a task by name.
+    #[must_use]
+    pub fn task_by_name(&self, name: &str) -> Option<TaskInfo> {
+        self.inner
+            .task_info
+            .lock()
+            .iter()
+            .find(|t| t.name.as_deref() == Some(name))
+            .cloned()
+    }
+
     /// Creates a waker for a task with a shared wake flag.
     fn create_waker(&self, id: TaskId) -> (Waker, Arc<Mutex<bool>>) {
         let woken_flag = Arc::new(Mutex::new(false));
@@ -319,6 +557,37 @@ impl TestExecutor {
         let mut infos = self.inner.task_info.lock();
         if let Some(info) = infos.iter_mut().find(|i| i.id == id) {
             f(info);
+        }
+    }
+
+    /// Gets the next task based on the scheduling policy.
+    fn next_task(&self) -> Option<Task> {
+        let mut ready = self.inner.ready_queue.lock();
+        if ready.is_empty() {
+            return None;
+        }
+
+        match &self.inner.policy {
+            SchedulingPolicy::Fifo => ready.pop_front(),
+            SchedulingPolicy::Lifo => ready.pop_back(),
+            SchedulingPolicy::SeededRandom(_) => {
+                if ready.len() == 1 {
+                    ready.pop_front()
+                } else {
+                    // Simple xorshift PRNG for reproducibility
+                    let mut state = self.inner.random_state.lock();
+                    let mut x = *state;
+                    x ^= x << 13;
+                    x ^= x >> 7;
+                    x ^= x << 17;
+                    *state = x;
+
+                    // Safe: we're taking modulo of ready.len() which is always small
+                    #[allow(clippy::cast_possible_truncation)]
+                    let idx = (x as usize) % ready.len();
+                    ready.remove(idx)
+                }
+            }
         }
     }
 }
@@ -553,5 +822,340 @@ mod tests {
         let debug = format!("{:?}", executor);
         assert!(debug.contains("TestExecutor"));
         assert!(debug.contains("pending"));
+    }
+
+    // ========================================================================
+    // Sync Points Tests (Issue #8)
+    // ========================================================================
+
+    #[test]
+    fn test_sync_point_basic() {
+        let executor = TestExecutor::new();
+
+        let sync = executor.sync_point("checkpoint");
+        executor.spawn(async move {
+            sync.await;
+            42
+        });
+
+        // Run until task waits at sync point
+        let _ = executor.run_until_stalled();
+        assert_eq!(executor.waiting_at("checkpoint"), 1);
+        assert_eq!(executor.waiting_count(), 1);
+
+        // Release the sync point
+        assert_eq!(executor.release("checkpoint"), 1);
+
+        // Task should complete
+        let _ = executor.run_until_stalled();
+        assert_eq!(executor.waiting_at("checkpoint"), 0);
+    }
+
+    #[test]
+    fn test_sync_point_multiple_tasks() {
+        let executor = TestExecutor::new();
+
+        let sync1 = executor.sync_point("checkpoint");
+        let sync2 = executor.sync_point("checkpoint");
+        let sync3 = executor.sync_point("checkpoint");
+
+        executor.spawn(async move {
+            sync1.await;
+        });
+        executor.spawn(async move {
+            sync2.await;
+        });
+        executor.spawn(async move {
+            sync3.await;
+        });
+
+        let _ = executor.run_until_stalled();
+        assert_eq!(executor.waiting_at("checkpoint"), 3);
+
+        // Release all at once
+        let released = executor.release("checkpoint");
+        assert_eq!(released, 3);
+
+        let _ = executor.run_until_stalled();
+        assert_eq!(executor.completed_count(), 3);
+    }
+
+    #[test]
+    fn test_sync_point_release_one() {
+        let executor = TestExecutor::new();
+
+        let sync1 = executor.sync_point("checkpoint");
+        let sync2 = executor.sync_point("checkpoint");
+
+        executor.spawn(async move {
+            sync1.await;
+        });
+        executor.spawn(async move {
+            sync2.await;
+        });
+
+        let _ = executor.run_until_stalled();
+        assert_eq!(executor.waiting_at("checkpoint"), 2);
+
+        // Release one at a time
+        assert!(executor.release_one("checkpoint"));
+        let _ = executor.run_until_stalled();
+        assert_eq!(executor.waiting_at("checkpoint"), 1);
+
+        assert!(executor.release_one("checkpoint"));
+        let _ = executor.run_until_stalled();
+        assert_eq!(executor.waiting_at("checkpoint"), 0);
+
+        // No more to release
+        assert!(!executor.release_one("checkpoint"));
+    }
+
+    // ========================================================================
+    // Step-by-Step Execution Tests (Issue #9)
+    // ========================================================================
+
+    #[test]
+    fn test_step_task() {
+        let executor = TestExecutor::new();
+
+        let handle1 = executor.spawn(async { 1 });
+        let handle2 = executor.spawn(async { 2 });
+
+        // Step only the second task
+        assert!(executor.step_task(handle2.id));
+        assert!(handle2.is_complete());
+        assert!(!handle1.is_complete());
+
+        // Now step the first
+        assert!(executor.step_task(handle1.id));
+        assert!(handle1.is_complete());
+    }
+
+    #[test]
+    fn test_step_task_not_found() {
+        let executor = TestExecutor::new();
+        let handle = executor.spawn(async { 1 });
+
+        // Run the task first
+        let _ = executor.step();
+
+        // Task is no longer in ready queue
+        assert!(!executor.step_task(handle.id));
+    }
+
+    #[test]
+    fn test_run_steps() {
+        let executor = TestExecutor::new();
+        executor.spawn(async { 1 });
+        executor.spawn(async { 2 });
+        executor.spawn(async { 3 });
+        executor.spawn(async { 4 });
+        executor.spawn(async { 5 });
+
+        // Only run 3 steps
+        let stepped = executor.run_steps(3);
+        assert_eq!(stepped, 3);
+        assert_eq!(executor.pending_count(), 2);
+    }
+
+    #[test]
+    fn test_run_until_complete() {
+        let executor = TestExecutor::new();
+        executor.spawn(async { 1 });
+        executor.spawn(async { 2 });
+        executor.spawn(async { 3 });
+
+        let polls = executor.run_until_complete();
+        assert_eq!(polls, 3);
+        assert!(executor.is_empty());
+    }
+
+    // ========================================================================
+    // Task Inspection Tests (Issue #10)
+    // ========================================================================
+
+    #[test]
+    fn test_spawn_named() {
+        let executor = TestExecutor::new();
+        let handle = executor.spawn_named("my-task", async { 42 });
+
+        let info = executor.task(handle.id).unwrap();
+        assert_eq!(info.name, Some("my-task".to_string()));
+    }
+
+    #[test]
+    fn test_task_by_name() {
+        let executor = TestExecutor::new();
+        executor.spawn_named("task-a", async { 1 });
+        executor.spawn_named("task-b", async { 2 });
+
+        let info = executor.task_by_name("task-a").unwrap();
+        assert_eq!(info.name, Some("task-a".to_string()));
+
+        let info = executor.task_by_name("task-b").unwrap();
+        assert_eq!(info.name, Some("task-b".to_string()));
+
+        assert!(executor.task_by_name("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_completed_count() {
+        let executor = TestExecutor::new();
+        executor.spawn(async { 1 });
+        executor.spawn(async { 2 });
+        executor.spawn(async { 3 });
+
+        assert_eq!(executor.completed_count(), 0);
+
+        let _ = executor.step();
+        assert_eq!(executor.completed_count(), 1);
+
+        let _ = executor.run_until_stalled();
+        assert_eq!(executor.completed_count(), 3);
+    }
+
+    // ========================================================================
+    // Deterministic Ordering Tests (Issue #11)
+    // ========================================================================
+
+    #[test]
+    fn test_fifo_policy() {
+        let executor = TestExecutor::with_policy(SchedulingPolicy::Fifo);
+
+        let handle1 = executor.spawn(async { 1 });
+        let handle2 = executor.spawn(async { 2 });
+        let handle3 = executor.spawn(async { 3 });
+
+        // FIFO: first spawned runs first
+        let _ = executor.step();
+        assert!(handle1.is_complete());
+        assert!(!handle2.is_complete());
+        assert!(!handle3.is_complete());
+
+        let _ = executor.step();
+        assert!(handle2.is_complete());
+
+        let _ = executor.step();
+        assert!(handle3.is_complete());
+    }
+
+    #[test]
+    fn test_lifo_policy() {
+        let executor = TestExecutor::with_policy(SchedulingPolicy::Lifo);
+
+        let handle1 = executor.spawn(async { 1 });
+        let handle2 = executor.spawn(async { 2 });
+        let handle3 = executor.spawn(async { 3 });
+
+        // LIFO: last spawned runs first
+        let _ = executor.step();
+        assert!(!handle1.is_complete());
+        assert!(!handle2.is_complete());
+        assert!(handle3.is_complete());
+
+        let _ = executor.step();
+        assert!(handle2.is_complete());
+
+        let _ = executor.step();
+        assert!(handle1.is_complete());
+    }
+
+    #[test]
+    fn test_seeded_random_policy_reproducible() {
+        // Same seed should produce same order
+        let results1 = {
+            let executor = TestExecutor::with_policy(SchedulingPolicy::SeededRandom(42));
+            let handles: Vec<_> = (0..10).map(|i| executor.spawn(async move { i })).collect();
+
+            let mut order = Vec::new();
+            while executor.pending_count() > 0 {
+                let _ = executor.step();
+                for (i, h) in handles.iter().enumerate() {
+                    if h.is_complete() && !order.contains(&i) {
+                        order.push(i);
+                    }
+                }
+            }
+            order
+        };
+
+        let results2 = {
+            let executor = TestExecutor::with_policy(SchedulingPolicy::SeededRandom(42));
+            let handles: Vec<_> = (0..10).map(|i| executor.spawn(async move { i })).collect();
+
+            let mut order = Vec::new();
+            while executor.pending_count() > 0 {
+                let _ = executor.step();
+                for (i, h) in handles.iter().enumerate() {
+                    if h.is_complete() && !order.contains(&i) {
+                        order.push(i);
+                    }
+                }
+            }
+            order
+        };
+
+        // Same seed produces same execution order
+        assert_eq!(results1, results2);
+    }
+
+    #[test]
+    fn test_seeded_random_different_seeds() {
+        // Different seeds should (likely) produce different orders
+        let results1 = {
+            let executor = TestExecutor::with_policy(SchedulingPolicy::SeededRandom(42));
+            let handles: Vec<_> = (0..10).map(|i| executor.spawn(async move { i })).collect();
+
+            let mut order = Vec::new();
+            while executor.pending_count() > 0 {
+                let _ = executor.step();
+                for (i, h) in handles.iter().enumerate() {
+                    if h.is_complete() && !order.contains(&i) {
+                        order.push(i);
+                    }
+                }
+            }
+            order
+        };
+
+        let results2 = {
+            let executor = TestExecutor::with_policy(SchedulingPolicy::SeededRandom(12345));
+            let handles: Vec<_> = (0..10).map(|i| executor.spawn(async move { i })).collect();
+
+            let mut order = Vec::new();
+            while executor.pending_count() > 0 {
+                let _ = executor.step();
+                for (i, h) in handles.iter().enumerate() {
+                    if h.is_complete() && !order.contains(&i) {
+                        order.push(i);
+                    }
+                }
+            }
+            order
+        };
+
+        // Different seeds produce different execution orders
+        assert_ne!(results1, results2);
+    }
+
+    #[test]
+    fn test_policy_getter() {
+        let executor = TestExecutor::new();
+        assert!(matches!(executor.policy(), SchedulingPolicy::Fifo));
+
+        let executor = TestExecutor::with_policy(SchedulingPolicy::Lifo);
+        assert!(matches!(executor.policy(), SchedulingPolicy::Lifo));
+
+        let executor = TestExecutor::with_policy(SchedulingPolicy::SeededRandom(42));
+        assert!(matches!(
+            executor.policy(),
+            SchedulingPolicy::SeededRandom(42)
+        ));
+    }
+
+    #[test]
+    fn test_seed_getter() {
+        let executor = TestExecutor::with_policy(SchedulingPolicy::SeededRandom(12345));
+        assert_eq!(executor.seed(), 12345);
     }
 }

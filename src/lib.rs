@@ -52,7 +52,9 @@ pub mod sync;
 pub mod prelude {
     pub use crate::clock::*;
     pub use crate::error::{Error, Result};
-    pub use crate::executor::{TaskHandle, TaskId, TaskInfo, TaskState, TestExecutor};
+    pub use crate::executor::{
+        SchedulingPolicy, SyncPointFuture, TaskHandle, TaskId, TaskInfo, TaskState, TestExecutor,
+    };
 }
 
 // Re-exports

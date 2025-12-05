@@ -9,6 +9,18 @@ use std::task::{Context, Poll};
 
 use parking_lot::Mutex;
 
+/// Scheduling policy for deterministic task ordering.
+#[derive(Clone, Debug, Default)]
+pub enum SchedulingPolicy {
+    /// First-in-first-out ordering (default).
+    #[default]
+    Fifo,
+    /// Last-in-first-out ordering.
+    Lifo,
+    /// Seeded random ordering (reproducible).
+    SeededRandom(u64),
+}
+
 /// Unique identifier for a spawned task.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TaskId(u64);
