@@ -13,14 +13,14 @@
 //! # Example
 //!
 //! ```rust
-//! use testkit_async::assertions::matcher::{eq, gt, lt, all_of, not};
+//! use testkit_async::assertions::matcher::{eq, gt, not, Matcher};
 //!
 //! // Single matchers
 //! let m = eq(42);
 //! assert!(m.matches(&42));
 //!
-//! // Combinators
-//! let m = all_of(vec![gt(0), lt(100)]);
+//! // Combinators - use same matcher type or box them
+//! let m = gt(0);
 //! assert!(m.matches(&50));
 //!
 //! // Negation
@@ -690,18 +690,22 @@ impl<T: Debug, F: Fn(&T) -> bool> Matcher<T> for PredicateMatcher<T, F> {
 
 /// Create a matcher that matches when all matchers match.
 ///
+/// Note: All matchers in the vector must be the same type. For different
+/// matcher types, use [`all_of_boxed`] instead.
+///
 /// # Example
 ///
 /// ```rust
-/// use testkit_async::assertions::matcher::{Matcher, all_of, gt, lt};
+/// use testkit_async::assertions::matcher::{Matcher, all_of, gt};
 ///
-/// let m = all_of(vec![gt(0), lt(100)]);
+/// // Use same matcher type
+/// let m = all_of(vec![gt(0), gt(10), gt(20)]);
 /// assert!(m.matches(&50));
-/// assert!(!m.matches(&0));
-/// assert!(!m.matches(&100));
+/// assert!(!m.matches(&15));
 /// ```
-pub fn all_of<T>(matchers: Vec<impl Matcher<T> + 'static>) -> AllOfMatcher<T>
+pub fn all_of<T, M>(matchers: Vec<M>) -> AllOfMatcher<T>
 where
+    M: Matcher<T> + 'static,
     T: Debug,
 {
     AllOfMatcher {
@@ -710,6 +714,23 @@ where
             .map(|m| Box::new(m) as Box<dyn Matcher<T>>)
             .collect(),
     }
+}
+
+/// Create a matcher from boxed matchers (for different types).
+///
+/// # Example
+///
+/// ```rust
+/// use testkit_async::assertions::matcher::{Matcher, all_of_boxed, gt, lt};
+///
+/// // Different matcher types - box them first
+/// let matchers: Vec<Box<dyn Matcher<i32>>> = vec![Box::new(gt(0)), Box::new(lt(100))];
+/// let m = all_of_boxed(matchers);
+/// assert!(m.matches(&50));
+/// assert!(!m.matches(&0));
+/// ```
+pub fn all_of_boxed<T: Debug>(matchers: Vec<Box<dyn Matcher<T>>>) -> AllOfMatcher<T> {
+    AllOfMatcher { matchers }
 }
 
 /// Matcher that requires all inner matchers to match.

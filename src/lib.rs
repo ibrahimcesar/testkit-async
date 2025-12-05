@@ -42,6 +42,7 @@ pub mod chaos;
 pub mod error;
 pub mod executor;
 pub mod mock;
+pub mod runtime;
 pub mod sync;
 
 /// Prelude for convenient imports

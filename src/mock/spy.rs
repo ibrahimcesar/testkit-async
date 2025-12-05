@@ -71,7 +71,7 @@ where
     /// ```rust
     /// use testkit_async::mock::Spy;
     ///
-    /// let spy = Spy::new(|x: i32| x + 1);
+    /// let spy: Spy<_, i32, i32> = Spy::new(|x: i32| x + 1);
     /// ```
     pub fn new(func: F) -> Self {
         Self {

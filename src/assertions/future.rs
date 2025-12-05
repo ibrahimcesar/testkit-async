@@ -226,8 +226,9 @@ macro_rules! assert_resolves_err {
 ///
 /// ```rust
 /// use testkit_async::assertions::PollCounter;
+/// use std::future::ready;
 ///
-/// let (future, counter) = PollCounter::wrap(async { 42 });
+/// let (future, counter) = PollCounter::wrap(ready(42));
 ///
 /// // Poll the future
 /// let result = futures::executor::block_on(future);
